@@ -266,6 +266,7 @@ if(NOT DEFINED USE_VULKAN)
 endif()
 
 option(USE_SOURCE_DEBUG_ON_MOBILE "Enable " ON)
+option(USE_LITE_INTERPRETER_PROFILER "Enable " ON)
 option(USE_VULKAN_FP16_INFERENCE "Vulkan - Use fp16 inference" OFF)
 option(USE_VULKAN_RELAXED_PRECISION "Vulkan - Use relaxed precision math in the kernels (mediump)" OFF)
 option(USE_VULKAN_SHADERC_RUNTIME "Vulkan - Use runtime shader compilation as opposed to build-time (needs libshaderc)" OFF)
@@ -561,6 +562,13 @@ if(INTERN_BUILD_MOBILE AND NOT BUILD_CAFFE2_MOBILE)
   set(INTERN_DISABLE_MOBILE_INTERP ON)
 endif()
 
+# To build with profiler we need to add
+# dependency to libkineto in android/pytorch_android/CMakeLists.txt
+# For now we avoid that.
+if(BUILD_JNI)
+  set(USE_LITE_INTERPRETER_PROFILER OFF)
+endif()
+
 # ---[ Utils
 include(cmake/public/utils.cmake)
 
@@ -685,6 +693,10 @@ endif()
 
 if(USE_SOURCE_DEBUG_ON_MOBILE)
   string(APPEND CMAKE_CXX_FLAGS " -DSYMBOLICATE_MOBILE_DEBUG_HANDLE")
+endif()
+
+if(USE_LITE_INTERPRETER_PROFILER)
+  string(APPEND CMAKE_CXX_FLAGS " -DEDGE_PROFILER_USE_KINETO")
 endif()
 
 # ---[ Allowlist file if allowlist is specified
