@@ -1,7 +1,7 @@
 import re
 
 from dataclasses import dataclass
-from typing import List, Dict, Optional, Iterator, Tuple, Set, NoReturn, Sequence, Callable, Union
+from typing import Any, List, Dict, Optional, Iterator, Tuple, Set, NoReturn, Sequence, Callable, Union
 from enum import Enum, auto
 import itertools
 
@@ -229,6 +229,14 @@ class NativeFunction:
     # changes the semantics of set_output to call the parent class.
     structured_inherits: Optional[str]
 
+    # Structured kernels can declare elements as "precomputed". These elements
+    # are returned by the meta function in one struct and passed to the impl
+    # function in lieu of certain kernel arguments that these precomputed
+    # elements supersede. Information about the names and types of these
+    # precomputed elements and how they correspond to kernel arguments is stored
+    # in this member, if applicable.
+    precomputed: Optional['Precompute']
+
     # Argument names whose default  should be excluded from the C++ interface.
     # Intended for resolving overload ambiguities between signatures.
     cpp_no_default_args: Set[str]
@@ -320,6 +328,10 @@ class NativeFunction:
         category_override = e.pop('category_override', None)
         assert category_override is None or isinstance(category_override, str), f'not a str: {category_override}'
 
+        precomputed_dict = e.pop('precomputed', None)
+        assert precomputed_dict is None or structured is True
+        precomputed = Precompute.parse(precomputed_dict) if precomputed_dict else None
+
         from tools.codegen.api import cpp
 
         raw_dispatch = e.pop('dispatch', None)
@@ -389,6 +401,7 @@ class NativeFunction:
             structured=structured,
             structured_delegate=structured_delegate,
             structured_inherits=structured_inherits,
+            precomputed=precomputed,
             manual_kernel_registration=manual_kernel_registration,
             manual_cpp_binding=manual_cpp_binding,
             python_module=python_module,
@@ -1496,3 +1509,66 @@ def parse_returns(return_decl: str) -> Tuple[Return, ...]:
     if return_decl[0] == '(' and return_decl[-1] == ')':
         return_decl = return_decl[1:-1]
     return tuple(Return.parse(arg) for arg in return_decl.split(', '))
+
+# A PrecomputedElement consists of the name of such an element and its C++ type.
+# Together with `Precompute` below, it helps capture all information about
+# precomputed elements needed to properly generate code for a kernel that has them.
+@dataclass(frozen=True)
+class PrecomputedElement:
+    # The name of the precomputed element.
+    name: str
+    # The C++ type of the precomputed element.
+    cpp_ty: str
+
+    @staticmethod
+    def parse(src: str) -> 'PrecomputedElement':
+        cpp_ty, name = src.split(" ")
+        r = PrecomputedElement(name=name, cpp_ty=cpp_ty)
+        assert str(r) == src, f"{str(r)} != {src}"
+        return r
+
+    def decl(self) -> str:
+        return f"{self.cpp_ty} {self.name}"
+
+    def __str__(self) -> str:
+        return self.decl()
+
+# A Precompute instance consists of a map from kernel argument name
+# to the list of PrecomputedElement instances that should replace that
+# kernel argument in the impl function.
+@dataclass(frozen=True)
+class Precompute:
+    # A map from kernel argument name -> a list of precomputed
+    # elements that replaces/supersedes it.
+    replace: Dict[str, List[PrecomputedElement]]
+
+    @staticmethod
+    def parse(src: Dict[str, Any]) -> 'Precompute':
+        assert "elements" in src
+        assert "replace" in src
+
+        # Parse the "elements" field to get the names and types of all precomputed elements.
+        raw_elements = src["elements"].split(",")
+        elements = [PrecomputedElement.parse(element.lstrip()) for element in raw_elements]
+        # Create a set out of elements just to sanity check below that all elements are
+        # mentioned in the "replace" field.
+        elements_set = set(elements)
+
+        # Parse the "replace" field to get the names of which precomputed elements
+        # should replace which kernel arguments.
+        name_to_element = {element.name: element for element in elements}
+        replace = {}
+        for raw_replace_item in src["replace"]:
+            arg, with_list = raw_replace_item.split(" -> ")
+            with_list = with_list.split(",")
+            with_list = [name_to_element[name.strip()] for name in with_list]
+            replace[arg] = with_list
+
+            for item in with_list:
+                elements_set.remove(item)
+
+        # All precomputed elements should be mentioned at least once on the RHS
+        # of an entry in the "replace" field.
+        assert not elements_set
+
+        return Precompute(replace=replace)
